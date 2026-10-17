@@ -3,6 +3,7 @@ LEVELS = 254
 
 ENCODING = {
     "t2m":         {"vmin": -35.0, "vmax": 45.0,   "transform": "linear", "unit": "°C"},
+    "t850":        {"vmin": -35.0, "vmax": 45.0,   "transform": "linear", "unit": "°C"},
     "wind":        {"vmin": 0.0,   "vmax": 250.0,  "transform": "linear", "unit": "km/h"},
     "tp":          {"vmin": 0.0,   "vmax": 125.0,  "transform": "sqrt",   "unit": "mm"},
     "tp_acc":      {"vmin": 0.0,   "vmax": 500.0,  "transform": "sqrt",   "unit": "mm"},
