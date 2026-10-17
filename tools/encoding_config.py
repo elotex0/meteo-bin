@@ -14,4 +14,7 @@ ENCODING = {
     "twater":      {"vmin": 0.0,   "vmax": 100.0,  "transform": "linear", "unit": "mm"},
     "snowfall":    {"vmin": 0.0,   "vmax": 6000.0, "transform": "linear", "unit": "m"},
     "ww":          {"vmin": 0.0,   "vmax": 254.0,  "transform": "raw",    "unit": ""},
+    "srh3km":      {"vmin": -1500.0, "vmax": 1500.0, "transform": "ssqrt", "unit": "m²/s²"},
+    "ehi":         {"vmin": 0.0,   "vmax": 10.0,   "transform": "sqrt",   "unit": ""},
+    "scp":         {"vmin": 0.0,   "vmax": 50.0,   "transform": "sqrt",   "unit": ""},
 }
