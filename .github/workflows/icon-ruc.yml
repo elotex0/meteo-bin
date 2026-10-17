@@ -272,7 +272,7 @@ jobs:
 
       - name: Generate Metadata
         run: |
-          python python models/icon-ruc/meta_icon-ruc.py iconruc/${{ needs.fetch_and_generate.outputs.run }} ${{ needs.fetch_and_generate.outputs.run }} ${{ env.DATE }}
+          python models/icon-ruc/meta_icon-ruc.py iconruc/${{ needs.fetch_and_generate.outputs.run }} ${{ needs.fetch_and_generate.outputs.run }} ${{ env.DATE }}
 
       - name: Rohdateien mit gzip komprimieren
         run: |
