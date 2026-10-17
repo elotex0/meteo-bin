@@ -135,8 +135,9 @@ jobs:
       - name: Generate PNGs
         run: |
           printf '%s\n' $VARIABLES | xargs -P "$(nproc)" -I{} bash -c '
+            cp -r data/grid "data/grid_{}"
             mkdir -p "iconeu/{}"
-            python models/icon-eu/bin_icon-eu.py "data/{}" "iconeu/{}" "{}"
+            python models/icon-eu/bin_icon-eu.py "data/{}" "iconeu/{}" "{}" "data/grid_{}"
           '
 
       - name: Upload PNGs artifact

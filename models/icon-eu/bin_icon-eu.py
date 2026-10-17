@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 import cfgrib
 import numpy as np
 import pandas as pd
-from scipy.interpolate import RegularGridInterpolator
+from scipy.spatial import Delaunay, cKDTree
 
 from encoding_config import NODATA_U8, LEVELS, ENCODING
 
@@ -17,15 +17,26 @@ warnings.simplefilter(action='ignore', category=FutureWarning)
 # ------------------------------
 # Eingabe-/Ausgabe
 # ------------------------------
-data_dir = sys.argv[1]        # z.B. "data/t2m"
-output_dir = sys.argv[2]      # z.B. "iconeu/t2m"
-var_type = sys.argv[3]        # 't2m', 't850', 'ww', 'tp', 'tp_acc', 'wind', ...
+data_dir = sys.argv[1]          # z.B. "data/t2m"
+output_dir = sys.argv[2]        # z.B. "iconeu/t2m"
+var_type = sys.argv[3].lower()  # 't2m', 't850', 'ww', 'tp', 'tp_acc', 'wind', ...
+grid_dir = sys.argv[4] if len(sys.argv) > 4 else "data/grid"
 os.makedirs(output_dir, exist_ok=True)
 
 if var_type not in ENCODING:
     print(f"Unbekannter var_type {var_type}")
     sys.exit(1)
 enc = ENCODING[var_type]
+
+# ICON-EU läuft auf dem nativen Dreiecksgitter - die Gitterkoordinaten
+# müssen separat aus den von DWD bereitgestellten CLAT-/CLON-GRIB2-Dateien
+# (ICON-EU-Gitter!) geladen werden.
+clat_path = os.path.join(grid_dir, "clat.grib2")
+clon_path = os.path.join(grid_dir, "clon.grib2")
+
+for gp in (clat_path, clon_path):
+    if not os.path.exists(gp):
+        raise FileNotFoundError(f"Grid-Datei nicht gefunden: {gp}")
 
 # ------------------------------
 # Ausgaberaster (identisch zum ICON-D2-Raster)
@@ -35,10 +46,16 @@ enc = ENCODING[var_type]
 GRID_LON_MIN, GRID_LAT_MIN, GRID_LON_MAX, GRID_LAT_MAX = -3.94, 43.18, 20.34, 58.08
 GRID_WIDTH, GRID_HEIGHT = 1215, 746
 
+# Ziel-Pixel: Zeilen von Nord nach Süd, Spalten von West nach Ost
 lon_t = np.linspace(GRID_LON_MIN, GRID_LON_MAX, GRID_WIDTH)
-lat_t = np.linspace(GRID_LAT_MAX, GRID_LAT_MIN, GRID_HEIGHT)   # Nord -> Süd
-lat_tt, lon_tt = np.meshgrid(lat_t, lon_t, indexing="ij")      # Shape (HEIGHT, WIDTH)
-target_points = np.column_stack((lat_tt.ravel(), lon_tt.ravel()))
+lat_t = np.linspace(GRID_LAT_MAX, GRID_LAT_MIN, GRID_HEIGHT)
+lon_tt, lat_tt = np.meshgrid(lon_t, lat_t)          # Shape (HEIGHT, WIDTH)
+
+# Für Triangulation/Nearest-Neighbor wird die Länge mit cos(Breite) skaliert,
+# damit die Dreiecke in der (lon, lat)-Ebene annähernd unverzerrt sind.
+COS_LAT0 = np.cos(np.radians(0.5 * (GRID_LAT_MIN + GRID_LAT_MAX)))
+target_points = np.column_stack((lon_tt.ravel() * COS_LAT0, lat_tt.ravel()))
+n_target = target_points.shape[0]
 
 
 def encode_uint8(data, enc):
@@ -66,21 +83,80 @@ def encode_uint8(data, enc):
     return q
 
 
-def to_target_grid(data, lon, lat, method):
-    """Reguläres Modellgitter (lat, lon) -> Ausgaberaster (HEIGHT, WIDTH), row0 = Norden.
-    Punkte außerhalb des Modellgitters = NaN."""
-    # Längen in -180..180 bringen und beide Achsen aufsteigend sortieren
-    lon = np.where(lon > 180.0, lon - 360.0, lon)
-    order_lon = np.argsort(lon)
-    order_lat = np.argsort(lat)
-    lon = lon[order_lon]
-    lat = lat[order_lat]
-    data = data[np.ix_(order_lat, order_lon)]
+def _load_grid_coords(path):
+    """Lädt Gitterkoordinaten aus CLAT-/CLON-GRIB2-Datei (in Grad)."""
+    ds_grid = cfgrib.open_dataset(path)
+    varname = list(ds_grid.data_vars)[0]
+    values = np.asarray(ds_grid[varname].values).ravel()
+    ds_grid.close()
 
-    interp = RegularGridInterpolator(
-        (lat, lon), data, method=method, bounds_error=False, fill_value=np.nan
-    )
-    return interp(target_points).reshape(GRID_HEIGHT, GRID_WIDTH)
+    if np.nanmax(np.abs(values)) <= (np.pi + 0.1):
+        values = np.rad2deg(values)
+    return values
+
+
+# ------------------------------
+# Gitter laden + Interpolation einmalig vorbereiten
+# ------------------------------
+lats = _load_grid_coords(clat_path)
+lons = _load_grid_coords(clon_path)
+lons = np.where(lons > 180.0, lons - 360.0, lons)
+n_grid = lats.shape[0]
+
+points_all = np.column_stack((lons * COS_LAT0, lats))
+
+finite_mask = np.all(np.isfinite(points_all), axis=1)
+n_bad = int((~finite_mask).sum())
+if n_bad:
+    print(f"Warnung: {n_bad} nicht-endliche Gitterpunkte gefunden, werden entfernt.")
+    valid_idx = np.nonzero(finite_mask)[0]
+    points = points_all[valid_idx]
+else:
+    valid_idx = None
+    points = points_all
+
+print(f"Gitterpunkte: {points.shape[0]} (finite)")
+print("Baue Triangulation für Interpolation & Hüllen-Maske auf ...")
+tri = Delaunay(points, qhull_options="Qbb Qc Qz Qt")
+
+# Für jeden Zielpixel: umgebendes Dreieck + baryzentrische Gewichte (einmalig).
+# Danach ist die Interpolation pro Datei nur noch eine gewichtete Summe.
+simplex = tri.find_simplex(target_points)
+inside = simplex >= 0
+_s = simplex[inside]
+_T = tri.transform[_s]                                    # (n, 3, 2)
+_delta = target_points[inside] - _T[:, 2]
+_b = np.einsum("nij,nj->ni", _T[:, :2], _delta)           # (n, 2)
+_w = np.column_stack((_b, 1.0 - _b.sum(axis=1)))          # (n, 3)
+_verts = tri.simplices[_s]                                # (n, 3)
+
+# entartete Dreiecke (NaN-Gewichte) wie "außerhalb" behandeln
+_ok = np.all(np.isfinite(_w), axis=1)
+if not np.all(_ok):
+    _idx_inside = np.nonzero(inside)[0]
+    inside[_idx_inside[~_ok]] = False
+    _verts = _verts[_ok]
+    _w = _w[_ok]
+
+nn_idx = None
+if var_type == "ww":
+    # Wettercodes dürfen nicht gemittelt werden -> nächster Gitterpunkt
+    _, nn_idx = cKDTree(points).query(target_points)
+
+
+def to_target_grid(values_native):
+    """Werte auf dem Dreiecksgitter (1D) -> Zielraster (HEIGHT, WIDTH), row0 = Norden.
+    Außerhalb der Gitter-Hülle = NaN."""
+    if valid_idx is not None:
+        values_native = values_native[valid_idx]
+    values_native = np.asarray(values_native, dtype=np.float64)
+
+    out = np.full(n_target, np.nan, dtype=np.float64)
+    if nn_idx is not None:
+        out[inside] = values_native[nn_idx[inside]]
+    else:
+        out[inside] = np.einsum("ni,ni->n", values_native[_verts], _w)
+    return out.reshape(GRID_HEIGHT, GRID_WIDTH)
 
 
 # ------------------------------
@@ -117,9 +193,9 @@ for filename in all_files_global:
 
     valid_time_utc_override = None
 
-    # ------------------------------
-    # Daten je Typ
-    # ------------------------------
+    # --------------------------
+    # Daten je Typ (auf dem Dreiecksgitter)
+    # --------------------------
     if var_type == "t2m":
         if "t2m" not in ds:
             print(f"Keine t2m in {filename}")
@@ -164,8 +240,8 @@ for filename in all_files_global:
             ds.close()
             continue
 
-        tp_now = ds["tp"].values
-        tp_next = ds_next["tp"].values
+        tp_now = np.asarray(ds["tp"].values).squeeze()
+        tp_next = np.asarray(ds_next["tp"].values).squeeze()
         data = tp_next - tp_now
 
         vt_next_raw = ds_next["valid_time"].values
@@ -177,14 +253,10 @@ for filename in all_files_global:
             print(f"Keine Niederschlagsvariable in {filename}")
             ds.close()
             continue
-        lon_tmp = ds["longitude"].values
-        lat_tmp = ds["latitude"].values
-        tp_all = ds[tp_var].values
-        if tp_all.ndim == 1:
-            ny, nx = len(lat_tmp), len(lon_tmp)
-            data = tp_all.reshape(ny, nx)
-        elif tp_all.ndim == 3:
-            data = tp_all[3] - tp_all[0] if tp_all.shape[0] > 1 else tp_all[0]
+        tp_all = np.asarray(ds[tp_var].values)
+        if tp_all.ndim == 2 and tp_all.shape[0] > 1:
+            # (steps, n_grid) -> Differenz über mehrere Zeitschritte
+            data = tp_all[3] - tp_all[0] if tp_all.shape[0] > 3 else tp_all[-1] - tp_all[0]
         else:
             data = tp_all
     elif var_type == "dbz_cmax":
@@ -235,15 +307,11 @@ for filename in all_files_global:
         ds.close()
         continue
 
-    data = np.asarray(data)
-    if data.ndim == 3:
-        data = data[0]
+    data = np.asarray(data).squeeze()
 
     # --------------------------
     # Zeiten
     # --------------------------
-    lon = np.asarray(ds["longitude"].values, dtype=np.float64)
-    lat = np.asarray(ds["latitude"].values, dtype=np.float64)
     run_time_utc = pd.to_datetime(ds["time"].values) if "time" in ds else None
 
     if valid_time_utc_override is not None:
@@ -252,22 +320,26 @@ for filename in all_files_global:
         valid_time_raw = ds["valid_time"].values
         valid_time_utc = pd.to_datetime(valid_time_raw[0]) if np.ndim(valid_time_raw) > 0 else pd.to_datetime(valid_time_raw)
     else:
-        step = pd.to_timedelta(ds["step"].values[0])
-        valid_time_utc = run_time_utc + step
+        step = pd.to_timedelta(ds["step"].values[0]) if "step" in ds else pd.to_timedelta(0)
+        valid_time_utc = run_time_utc + step if run_time_utc is not None else None
+
+    if valid_time_utc is None:
+        print(f"{filename}: keine Gültigkeitszeit ermittelbar, überspringe")
+        ds.close()
+        continue
+
     valid_time_local = valid_time_utc.tz_localize("UTC").astimezone(ZoneInfo("Europe/Berlin"))
 
     ds.close()
 
     # --------------------------
-    # Modellgitter -> Ausgaberaster -> uint8
+    # Dreiecksgitter -> Zielraster -> uint8
     # --------------------------
-    if not (lon.ndim == 1 and lat.ndim == 1 and data.shape == (lat.size, lon.size)):
-        print(f"{filename}: Datenform {data.shape} passt nicht zum lat/lon-Gitter "
-              f"({lat.size}, {lon.size}), überspringe")
+    if data.shape != (n_grid,):
+        print(f"{filename}: Datenform {data.shape} passt nicht zum Grid ({n_grid},), überspringe")
         continue
 
-    method = "nearest" if var_type == "ww" else "linear"
-    grid_data = to_target_grid(data, lon, lat, method)     # row0 = Norden
+    grid_data = to_target_grid(data)          # row0 = Norden, NaN außerhalb der Hülle
     q = encode_uint8(grid_data, enc)
 
     outname = f"{var_type}_{valid_time_local:%Y%m%d_%H%M}"
