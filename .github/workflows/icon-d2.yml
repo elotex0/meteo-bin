@@ -56,8 +56,8 @@ jobs:
       - name: Download ICON grid (clat/clon)
         run: |
           mkdir -p data/grid
-          wget -q https://github.com/elotex0/WetterCRX-ICON-D2/releases/download/v.1.0/clat.grib2 -O data/grid/clat.grib2
-          wget -q https://github.com/elotex0/WetterCRX-ICON-D2/releases/download/v.1.0/clon.grib2 -O data/grid/clon.grib2
+          wget -q https://github.com/elotex0/meteo-bin/releases/download/icon-d2/clat.grib2 -O data/grid/clat.grib2
+          wget -q https://github.com/elotex0/meteo-bin/releases/download/icon-d2/clon.grib2 -O data/grid/clon.grib2
           echo "✅ ICON grid (clat/clon) heruntergeladen"
 
       - name: Download t2m GRIB2 files
