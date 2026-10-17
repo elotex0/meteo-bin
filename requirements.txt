@@ -1,0 +1,9 @@
+cfgrib==0.9.15.1
+numpy==2.5.4
+pandas==3.0.6
+scipy==1.18.1
+xarray==2026.9.0
+omfiles==1.2.0
+requests==2.34.2
+pillow==12.3.0
+matplotlib==3.11.2
