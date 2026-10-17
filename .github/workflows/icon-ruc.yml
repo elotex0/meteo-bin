@@ -1,0 +1,304 @@
+name: ICON-RUC Pipeline
+
+on:
+  workflow_dispatch:
+
+env:
+     PYTHONPATH: ${{ github.workspace }}/tools
+
+jobs:
+  fetch_and_generate:
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.set_run_date.outputs.run }}
+
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v7
+        with:
+          token: ${{ secrets.BIN_PAT }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Cache Python packages
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Set RUN and DATE (hourly)
+        id: set_run_date
+        run: |
+          HOUR=$(date -u +%H)
+          DATE=$(date -u +%Y-%m-%d)
+          RUN=$HOUR
+
+          echo "RUN=$RUN" >> $GITHUB_ENV
+          echo "DATE=$DATE" >> $GITHUB_ENV
+
+          echo "run=$RUN" >> $GITHUB_OUTPUT
+          echo "date=$DATE" >> $GITHUB_OUTPUT
+
+          echo "Current UTC time: $HOUR -> RUN=$RUN, DATE=$DATE"
+
+      # 🆕 NEU: Grid-Dateien herunterladen
+      - name: Download ICON grid (clat/clon)
+        run: |
+          mkdir -p data/grid
+          wget -q https://github.com/elotex0/meteo-bin/releases/download/icon-ruc/clat.grib2 -O data/grid/clat.grib2
+          wget -q https://github.com/elotex0/meteo-bin/releases/download/icon-ruc/clon.grib2 -O data/grid/clon.grib2
+          echo "✅ ICON grid (clat/clon) heruntergeladen"
+
+      - name: Download t2m GRIB2 files
+        run: |
+          mkdir -p data/t2m
+          cd data/t2m
+          seq 0 27 | xargs -n 1 -P 4 -I{} bash -c '
+            i_padded=$(printf "%03d" {} )
+            URL="https://opendata.dwd.de/weather/nwp/v1/m/icon-d2-ruc/p/T_2M/r/${DATE}T${RUN}:00/s/PT${i_padded}H00M.grib2"
+            wget -q -O t2m_${i_padded}.grib2 "$URL" || echo "Datei $URL nicht verfügbar, überspringe..."
+          '
+
+      - name: Download ww GRIB2 files
+        run: |
+          mkdir -p data/ww
+          cd data/ww
+          seq 1 27 | xargs -n 1 -P 4 -I{} bash -c '
+            i_padded=$(printf "%03d" {} )
+            URL="https://opendata.dwd.de/weather/nwp/v1/m/icon-d2-ruc/p/WW/r/${DATE}T${RUN}:00/s/PT${i_padded}H00M.grib2"
+            wget -q -O ww_${i_padded}.grib2 "$URL" || echo "Datei $URL nicht verfügbar, überspringe..."
+          '
+
+      - name: Download tp GRIB2 files
+        run: |
+          mkdir -p data/tp
+          cd data/tp
+          seq 0 27 | xargs -n 1 -P 4 -I{} bash -c '
+            i_padded=$(printf "%03d" {} )
+            URL="https://opendata.dwd.de/weather/nwp/v1/m/icon-d2-ruc/p/TOT_PREC_D/r/${DATE}T${RUN}:00/s/PT${i_padded}H00M.grib2"
+            wget -q -O tot_prec_${i_padded}.grib2 "$URL" || echo "Datei $URL nicht verfügbar, überspringe..."
+          '
+          
+      - name: Download wind GRIB2 files
+        run: |
+          mkdir -p data/wind
+          cd data/wind
+          seq 0 27 | xargs -n 1 -P 4 -I{} bash -c '
+            i_padded=$(printf "%03d" {} )
+            URL="https://opendata.dwd.de/weather/nwp/v1/m/icon-d2-ruc/p/VMAX_10M/r/${DATE}T${RUN}:00/s/PT${i_padded}H00M.grib2"
+            wget -q -O wind_${i_padded}.grib2 "$URL" || echo "Datei $URL nicht verfügbar, überspringe..."
+          '
+
+      - name: Download dbz GRIB2 files
+        run: |
+          mkdir -p data/dbz_cmax
+          cd data/dbz_cmax
+          seq 0 27 | xargs -n 1 -P 7 -I{} bash -c '
+            i_padded=$(printf "%03d" {} )
+            URL="https://opendata.dwd.de/weather/nwp/v1/m/icon-d2-ruc/p/DBZ_CMAX/r/${DATE}T${RUN}:00/s/PT${i_padded}H00M.grib2"
+            wget -q -O dbz_cmax_${i_padded}.grib2 "$URL" || echo "Datei $URL nicht verfügbar, überspringe..."
+          '
+      - name: Download tp_acc GRIB2 files
+        run: |
+          mkdir -p data/tp_acc
+          cd data/tp_acc
+          seq 0 27 | xargs -n 1 -P 4 -I{} bash -c '
+            i_padded=$(printf "%03d" {} )
+            URL="https://opendata.dwd.de/weather/nwp/v1/m/icon-d2-ruc/p/TOT_PREC/r/${DATE}T${RUN}:00/s/PT${i_padded}H00M.grib2"
+            wget -q -O tp_acc_${i_padded}.grib2 "$URL" || echo "Datei $URL nicht verfügbar, überspringe..."
+          '
+
+      - name: Download cape_ml GRIB2 files
+        run: |
+          mkdir -p data/cape_ml
+          cd data/cape_ml
+          seq 0 27 | xargs -n 1 -P 4 -I{} bash -c '
+            i_padded=$(printf "%03d" {} )
+            URL="https://opendata.dwd.de/weather/nwp/v1/m/icon-d2-ruc/p/CAPE_ML/r/${DATE}T${RUN}:00/s/PT${i_padded}H00M.grib2"
+            wget -q -O cape_ml_${i_padded}.grib2 "$URL" || echo "Datei $URL nicht verfügbar, überspringe..."
+          '
+      # - name: Download snow_depth GRIB2 files
+      #   run: |
+      #     mkdir -p data/snow
+      #     cd data/snow
+      #     seq 0 13 | xargs -n 1 -P 4 -I{} bash -c '
+      #       i_padded=$(printf "%03d" {} )
+      #       URL="https://opendata.dwd.de/weather/nwp/v1/m/icon-d2-ruc/p/H_SNOW/r/${DATE}T${RUN}:00/s/PT${i_padded}H00M.grib2"
+      #       wget -q -O snow_${i_padded}.grib2 "$URL" || echo "Datei $URL nicht verfügbar, überspringe..."
+      #     '
+
+      - name: Download srh3km GRIB2 files
+        run: |
+          mkdir -p data/srh3km
+          cd data/srh3km
+          seq 0 27 | xargs -n 1 -P 7 -I{} bash -c '
+            i_padded=$(printf "%03d" {} )
+            URL="https://opendata.dwd.de/weather/nwp/v1/m/icon-d2-ruc/p/SRH/lvt1/103/lv1/3000/r/${DATE}T${RUN}:00/s/PT${i_padded}H00M.grib2"
+            wget -q -O srh3km_${i_padded}.grib2 "$URL" || echo "Datei $URL nicht verfügbar, überspringe..."
+          '
+
+      - name: Download wshear u GRIB2 files
+        run: |
+          mkdir -p data/wshear_u
+          cd data/wshear_u
+          seq 0 27 | xargs -n 1 -P 7 -I{} bash -c '
+            i_padded=$(printf "%03d" {} )
+            URL="https://opendata.dwd.de/weather/nwp/v1/m/icon-d2-ruc/p/WSHEAR_U/lvt1/103/lv1/6000/r/${DATE}T${RUN}:00/s/PT${i_padded}H00M.grib2"
+            wget -q -O wshear_u_${i_padded}.grib2 "$URL" || echo "Datei $URL nicht verfügbar, überspringe..."
+          '
+
+      - name: Download wshear u GRIB2 files
+        run: |
+          mkdir -p data/wshear_v
+          cd data/wshear_v
+          seq 0 27 | xargs -n 1 -P 7 -I{} bash -c '
+            i_padded=$(printf "%03d" {} )
+            URL="https://opendata.dwd.de/weather/nwp/v1/m/icon-d2-ruc/p/WSHEAR_V/lvt1/103/lv1/6000/r/${DATE}T${RUN}:00/s/PT${i_padded}H00M.grib2"
+            wget -q -O wshear_v_${i_padded}.grib2 "$URL" || echo "Datei $URL nicht verfügbar, überspringe..."
+          '
+
+      - name: Upload GRIB2 as artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: grib2
+          path: data/
+
+      - name: Upload grid file as artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: grid
+          path: data/grid/
+
+# -------------------------------------------------------
+  # 2️⃣ Generate PNGs in parallel (matrix)
+  # -------------------------------------------------------
+  generate_pngs:
+    runs-on: ubuntu-latest
+    needs: fetch_and_generate
+    strategy:
+      matrix:
+        variable: [t2m, ww, tp_acc, tp, dbz_cmax, cape_ml, srh3km, ehi, scp, wind] #snow
+      max-parallel: 10
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Download GRIB2 artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: grib2
+          path: data/
+
+      - name: Download grid artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: grid
+          path: data/grid/
+
+      - name: Generate PNGs for ${{ matrix.variable }}
+        run: |
+          mkdir -p iconruc/${{ matrix.variable }}
+          if [ "${{ matrix.variable }}" = "ehi" ]; then
+            python models/icon-ruc/bin_icon-ruc.py \
+              data/srh3km \
+              iconruc/${{ matrix.variable }} \
+              ${{ matrix.variable }} \
+              data/grid \
+              data/cape_ml
+            elif [ "${{ matrix.variable }}" = "scp" ]; then
+              python models/icon-ruc/bin_icon-ruc.py \
+                data/srh3km \
+                iconruc/${{ matrix.variable }} \
+                ${{ matrix.variable }} \
+                data/grid \
+                data/cape_ml \
+                data/wshear_u \
+                data/wshear_v 
+            else
+              python models/icon-ruc/bin_icon-ruc.py \
+                data/${{ matrix.variable }} \
+                iconruc/${{ matrix.variable }} \
+                ${{ matrix.variable }} \
+                data/grid
+            fi
+
+      - name: Upload BINs artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: iconruc-${{ matrix.variable }}
+          path: iconruc/${{ matrix.variable }}
+
+
+
+  deploy_to_r2:
+    runs-on: ubuntu-latest
+    needs: [fetch_and_generate, generate_pngs]
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v7
+
+      - name: Download all BINs artifact
+        uses: actions/download-artifact@v8
+        with:
+          pattern: iconruc-*
+          path: iconruc_raw
+
+      - name: Merge BIN folders into one structure
+        run: |
+          mkdir -p iconruc/${{ needs.fetch_and_generate.outputs.run }}
+          for d in iconruc_raw/*; do
+            if [ -d "$d" ]; then
+              varname=$(basename "$d" | sed 's/^iconruc-//')  # entfernt "iconruc-" Prefix
+              mkdir -p iconruc/${{ needs.fetch_and_generate.outputs.run }}/"$varname"
+              cp -r "$d"/* iconruc/${{ needs.fetch_and_generate.outputs.run }}/"$varname"/ || true
+            fi
+          done
+
+      - name: Generate Metadata
+        run: |
+          python python models/icon-ruc/meta_icon-ruc.py iconruc/${{ needs.fetch_and_generate.outputs.run }} ${{ needs.fetch_and_generate.outputs.run }} ${{ env.DATE }}
+
+      - name: Rohdateien mit gzip komprimieren
+        run: |
+          find iconruc/${{ needs.fetch_and_generate.outputs.run }} -type f | while read -r f; do
+            gzip -9 -n -c "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+          done
+
+      - name: Clean old runs on R2 except current
+        run: |
+          for run_folder in $(aws s3 ls s3://${{ secrets.ICONRUC_BUCKET }}/icon-ruc/ --endpoint-url https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com | awk '{print $2}' | sed 's#/##'); do
+            if [ "$run_folder" != "${{ needs.fetch_and_generate.outputs.run }}/" ]; then
+              aws s3 rm s3://${{ secrets.ICONRUC_BUCKET }}/icon-ruc/$run_folder --recursive --endpoint-url https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+            fi
+          done
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.ICON_ACCESS_KEY }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.ICON_SECRET_ACCESS_KEY }}
+
+      - name: Upload current run and metadata.json to R2
+        run: |
+          aws s3 sync ./iconruc/${{ needs.fetch_and_generate.outputs.run }}/ s3://${{ secrets.ICONRUC_BUCKET }}/icon-ruc/${{ needs.fetch_and_generate.outputs.run }}/ \
+            --endpoint-url https://${{ secrets.ICON_ACCOUNT_ID }}.r2.cloudflarestorage.com \
+            --content-type application/gzip
+
+          aws s3 cp ./iconruc/metadata.json s3://${{ secrets.ICONRUC_BUCKET }}/icon-ruc/metadata.json \
+            --endpoint-url https://${{ secrets.ICON_ACCOUNT_ID }}.r2.cloudflarestorage.com
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.ICON_ACCESS_KEY }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.ICON_SECRET_ACCESS_KEY }}
