@@ -136,7 +136,7 @@ jobs:
         run: |
           printf '%s\n' $VARIABLES | xargs -P "$(nproc)" -I{} bash -c '
             mkdir -p "iconeu/{}"
-            python models/icon-eu/bin_icon.eu.py "data/{}" "iconeu/{}" "{}"
+            python models/icon-eu/bin_icon-eu.py "data/{}" "iconeu/{}" "{}"
           '
 
       - name: Upload PNGs artifact
