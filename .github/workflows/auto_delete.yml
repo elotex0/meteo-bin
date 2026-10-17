@@ -16,6 +16,7 @@ jobs:
           script: |
             const targetWorkflows = [
               "ICON-D2 Pipeline",
+              "ICON-RUC Pipeline",
             ];
 
             const keepLatest = 1;
