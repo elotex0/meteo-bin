@@ -273,7 +273,7 @@ jobs:
             fi
           done
         env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.ICON_ACCESS_KEY_ID }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.ICON_ACCESS_KEY }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.ICON_SECRET_ACCESS_KEY }}
 
       - name: Upload current run and metadata.json to R2
@@ -287,5 +287,5 @@ jobs:
           aws s3 cp ./icond2/metadata.json s3://${{ secrets.ICOND2_BUCKET }}/icon-d2/metadata.json \
             --endpoint-url https://${{ secrets.ICON_ACCOUNT_ID }}.r2.cloudflarestorage.com
         env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.ICON_ACCESS_KEY_ID }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.ICON_ACCESS_KEY }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.ICON_SECRET_ACCESS_KEY }}
