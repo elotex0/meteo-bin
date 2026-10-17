@@ -3,6 +3,9 @@ name: ICON-D2 Pipeline
 on:
   workflow_dispatch:
 
+env:
+     PYTHONPATH: ${{ github.workspace }}/tools
+
 jobs:
   fetch_and_generate:
     runs-on: ubuntu-latest
@@ -178,8 +181,6 @@ jobs:
   generate_pngs:
     runs-on: ubuntu-latest
     needs: fetch_and_generate
-    env:
-      PYTHONPATH: ${{ github.workspace }}/tools
     strategy:
       matrix:
         variable: [t2m, ww, tp, tp_acc, wind, cape_ml, dbz_cmax, cloud, twater, snowfall, change_snow, snow]
