@@ -88,6 +88,16 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+
+      # Gitterkoordinaten (liegen wie vorher unter data/grid, das Script findet sie dort)
+      - name: Download grid (clat/clon)
+        run: |
+          mkdir -p data/grid
+          base=https://github.com/elotex0/meteo-bin/releases/download/icon-eu
+          wget -q "$base/clat.grib2" -O data/grid/clat.grib2 &
+          wget -q "$base/clon.grib2" -O data/grid/clon.grib2 &
+          wait
+
       # Alle Parameter x Stunden dieser Gruppe laufen in einem gemeinsamen Pool.
       # Stunden: START..HOURLY_MAX stündlich, danach bis MAX_HOUR im 3-Stunden-Schritt.
       - name: Download GRIB2 files (nur benötigte Parameter)
