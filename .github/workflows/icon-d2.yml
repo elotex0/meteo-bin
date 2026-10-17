@@ -217,7 +217,7 @@ jobs:
           elif [ "${{ matrix.variable }}" = "change_snow" ]; then
             input_dir="data/snow"
           fi
-          python scripts/generate_pngs.py \
+          python models/icon-d2/bin_icon-d2.py \
             "$input_dir" \
             icond2/${{ matrix.variable }} \
             ${{ matrix.variable }} \
@@ -256,7 +256,7 @@ jobs:
 
       - name: Generate Metadata
         run: |
-          python scripts/generate_metadata.py icond2/${{ needs.fetch_and_generate.outputs.run }} ${{ needs.fetch_and_generate.outputs.run }} ${{ env.DATE }}
+          python models/icon-d2/meta_icon-d2.py icond2/${{ needs.fetch_and_generate.outputs.run }} ${{ needs.fetch_and_generate.outputs.run }} ${{ env.DATE }}
 
       - name: Rohdateien mit gzip komprimieren
         run: |
