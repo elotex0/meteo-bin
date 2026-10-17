@@ -282,9 +282,9 @@ jobs:
 
       - name: Clean old runs on R2 except current
         run: |
-          for run_folder in $(aws s3 ls s3://${{ secrets.ICONRUC_BUCKET }}/icon-ruc/ --endpoint-url https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com | awk '{print $2}' | sed 's#/##'); do
+          for run_folder in $(aws s3 ls s3://${{ secrets.ICONRUC_BUCKET }}/icon-ruc/ --endpoint-url https://${{ secrets.ICON_ACCOUNT_ID }}.r2.cloudflarestorage.com | awk '{print $2}' | sed 's#/##'); do
             if [ "$run_folder" != "${{ needs.fetch_and_generate.outputs.run }}/" ]; then
-              aws s3 rm s3://${{ secrets.ICONRUC_BUCKET }}/icon-ruc/$run_folder --recursive --endpoint-url https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+              aws s3 rm s3://${{ secrets.ICONRUC_BUCKET }}/icon-ruc/$run_folder --recursive --endpoint-url https://${{ secrets.ICON_ACCOUNT_ID }}.r2.cloudflarestorage.com
             fi
           done
         env:
