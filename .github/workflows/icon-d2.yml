@@ -42,18 +42,12 @@ jobs:
         include:
           # downloads: DWD_PARAM:zielordner:dateiprefix:startstunde
           # variables: variable:eingabeordner
-          - name: t2m
-            downloads: "T_2M:t2m:t2m:0"
-            variables: "t2m:t2m"
-          - name: ww
-            downloads: "WW:ww:ww:1"
-            variables: "ww:ww"
+          - name: temp_ww_wind
+            downloads: "T_2M:t2m:t2m:0 WW:ww:ww:1 VMAX_10M:wind:wind:0"
+            variables: "t2m:t2m ww:ww wind:wind"
           - name: precip
             downloads: "TOT_PREC:tp:tot_prec:0"
             variables: "tp:tp tp_acc:tp"
-          - name: wind
-            downloads: "VMAX_10M:wind:wind:0"
-            variables: "wind:wind"
           - name: convective
             downloads: "CAPE_ML:cape_ml:cape_ml:0 DBZ_CMAX:dbz_cmax:dbz_cmax:0"
             variables: "cape_ml:cape_ml dbz_cmax:dbz_cmax"
@@ -85,23 +79,25 @@ jobs:
           export DATE RUN
           for spec in ${{ matrix.downloads }}; do
             IFS=: read -r PARAM DIR PREFIX START <<< "$spec"
-            export PARAM DIR PREFIX
             mkdir -p "data/$DIR"
-            seq "$START" 48 | xargs -P 16 -I{} bash -c '
-              i=$(printf "%03d" {})
-              URL="https://opendata.dwd.de/weather/nwp/v1/m/icon-d2/p/${PARAM}/r/${DATE}T${RUN}:00/s/PT${i}H00M.grib2"
-              OUT="data/${DIR}/${PREFIX}_${i}.grib2"
-              wget -q -O "$OUT" "$URL" || { echo "Datei $URL nicht verfügbar, überspringe..."; rm -f "$OUT"; }
-            '
-          done
+            for h in $(seq "$START" 48); do
+              echo "$PARAM $DIR $PREFIX $h"
+            done
+          done | xargs -P 16 -L1 bash -c '
+            PARAM=$0; DIR=$1; PREFIX=$2
+            i=$(printf "%03d" "$3")
+            URL="https://opendata.dwd.de/weather/nwp/v1/m/icon-d2/p/${PARAM}/r/${DATE}T${RUN}:00/s/PT${i}H00M.grib2"
+            OUT="data/${DIR}/${PREFIX}_${i}.grib2"
+            wget -q -O "$OUT" "$URL" || { echo "Datei $URL nicht verfügbar, überspringe..."; rm -f "$OUT"; }
+          '
 
       - name: Generate PNGs
         run: |
-          for spec in ${{ matrix.variables }}; do
-            IFS=: read -r VAR INDIR <<< "$spec"
+          printf '%s\n' ${{ matrix.variables }} | xargs -P "$(nproc)" -I{} bash -c '
+            IFS=: read -r VAR INDIR <<< "{}"
             mkdir -p "icond2/$VAR"
             python models/icon-d2/bin_icon-d2.py "data/$INDIR" "icond2/$VAR" "$VAR" data/grid
-          done
+          '
 
       - name: Upload Bin artifact
         uses: actions/upload-artifact@v7
