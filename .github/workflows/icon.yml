@@ -36,7 +36,7 @@ jobs:
         run: |
           HOUR=$(date -u +%H)
           case $HOUR in
-            03|04|05|09|11) RUN=00 ;;
+            03|04|05|09|12) RUN=00 ;;
             15|16|17|20) RUN=12 ;;
             *)
               echo "::error::Startzeit ${HOUR} UTC ist nicht vorgesehen (erlaubt: 03-05, 09-11, 15-20, 21-23)"
