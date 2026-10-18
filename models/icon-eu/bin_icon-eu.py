@@ -29,8 +29,7 @@ if var_type not in ENCODING:
 enc = ENCODING[var_type]
 
 # ICON-EU läuft auf dem nativen Dreiecksgitter - die Gitterkoordinaten
-# müssen separat aus den von DWD bereitgestellten CLAT-/CLON-GRIB2-Dateien
-# (ICON-EU-Gitter!) geladen werden.
+# kommen aus den CLAT-/CLON-GRIB2-Dateien (ICON-EU-Gitter!).
 clat_path = os.path.join(grid_dir, "clat.grib2")
 clon_path = os.path.join(grid_dir, "clon.grib2")
 
@@ -39,22 +38,36 @@ for gp in (clat_path, clon_path):
         raise FileNotFoundError(f"Grid-Datei nicht gefunden: {gp}")
 
 # ------------------------------
-# Ausgaberaster (identisch zum ICON-D2-Raster)
+# Ausgaberaster (ICON-EU, 0.0625 Grad ~ 6.5 km)
 # ------------------------------
 # regular-lat-lon, EPSG:4326, row0 = Norden, Werte = Pixelzentren.
-# MUSS zu GRID in generate_metadata.py passen (dort wird die Dateigröße geprüft).
-GRID_LON_MIN, GRID_LAT_MIN, GRID_LON_MAX, GRID_LAT_MAX = -3.94, 43.18, 20.34, 58.08
-GRID_WIDTH, GRID_HEIGHT = 1215, 746
+# MUSS zu GRID in meta_icon-eu.py passen (dort wird die Dateigröße geprüft).
+GRID_LON_MIN, GRID_LAT_MIN, GRID_LON_MAX, GRID_LAT_MAX = -23.5, 29.5, 62.5, 70.5
+GRID_WIDTH, GRID_HEIGHT = 1377, 657   # (86/0.0625)+1 , (41/0.0625)+1
 
-# Ziel-Pixel: Zeilen von Nord nach Süd, Spalten von West nach Ost
 lon_t = np.linspace(GRID_LON_MIN, GRID_LON_MAX, GRID_WIDTH)
-lat_t = np.linspace(GRID_LAT_MAX, GRID_LAT_MIN, GRID_HEIGHT)
-lon_tt, lat_tt = np.meshgrid(lon_t, lat_t)          # Shape (HEIGHT, WIDTH)
+lat_t = np.linspace(GRID_LAT_MAX, GRID_LAT_MIN, GRID_HEIGHT)   # Nord -> Süd
+lon_tt, lat_tt = np.meshgrid(lon_t, lat_t)                     # Shape (HEIGHT, WIDTH)
 
-# Für Triangulation/Nearest-Neighbor wird die Länge mit cos(Breite) skaliert,
-# damit die Dreiecke in der (lon, lat)-Ebene annähernd unverzerrt sind.
-COS_LAT0 = np.cos(np.radians(0.5 * (GRID_LAT_MIN + GRID_LAT_MAX)))
-target_points = np.column_stack((lon_tt.ravel() * COS_LAT0, lat_tt.ravel()))
+# Winkeltreue (stereographische) Projektion um die Domain-Mitte, damit die
+# nahezu gleichseitigen Dreiecke des Icosaedergitters auch bei der großen
+# Domain unverzerrt bleiben.
+_LON0 = np.radians(19.5)
+_LAT0 = np.radians(50.0)
+
+
+def proj(lon_deg, lat_deg):
+    lon = np.radians(np.asarray(lon_deg, dtype=np.float64))
+    lat = np.radians(np.asarray(lat_deg, dtype=np.float64))
+    k = 2.0 / (1.0 + np.sin(_LAT0) * np.sin(lat)
+               + np.cos(_LAT0) * np.cos(lat) * np.cos(lon - _LON0))
+    x = k * np.cos(lat) * np.sin(lon - _LON0)
+    y = k * (np.cos(_LAT0) * np.sin(lat)
+             - np.sin(_LAT0) * np.cos(lat) * np.cos(lon - _LON0))
+    return x, y
+
+
+target_points = np.column_stack(proj(lon_tt.ravel(), lat_tt.ravel()))
 n_target = target_points.shape[0]
 
 
@@ -96,31 +109,31 @@ def _load_grid_coords(path):
 
 
 # ------------------------------
-# Gitter laden + Interpolation einmalig vorbereiten
+# Gitter laden + auf Ausschnitt zuschneiden
 # ------------------------------
 lats = _load_grid_coords(clat_path)
 lons = _load_grid_coords(clon_path)
 lons = np.where(lons > 180.0, lons - 360.0, lons)
 n_grid = lats.shape[0]
 
-points_all = np.column_stack((lons * COS_LAT0, lats))
+# Puffer um den Ausschnitt, damit am Rand keine Löcher durch die konvexe Hülle entstehen
+margin = 2.0  # Grad
+sel = (
+    np.isfinite(lons) & np.isfinite(lats) &
+    (lons >= GRID_LON_MIN - margin) & (lons <= GRID_LON_MAX + margin) &
+    (lats >= GRID_LAT_MIN - margin) & (lats <= GRID_LAT_MAX + margin)
+)
+sel_idx = np.nonzero(sel)[0]          # Indizes ins volle Gitter (für die Daten)
+points = np.column_stack(proj(lons[sel_idx], lats[sel_idx]))
 
-finite_mask = np.all(np.isfinite(points_all), axis=1)
-n_bad = int((~finite_mask).sum())
-if n_bad:
-    print(f"Warnung: {n_bad} nicht-endliche Gitterpunkte gefunden, werden entfernt.")
-    valid_idx = np.nonzero(finite_mask)[0]
-    points = points_all[valid_idx]
-else:
-    valid_idx = None
-    points = points_all
+print(f"Gitterpunkte nach Zuschnitt: {len(sel_idx)} von {n_grid}")
+if len(sel_idx) < 3:
+    raise RuntimeError("Zu wenige Gitterpunkte im Ausschnitt - stimmen clat/clon?")
 
-print(f"Gitterpunkte: {points.shape[0]} (finite)")
 print("Baue Triangulation für Interpolation & Hüllen-Maske auf ...")
 tri = Delaunay(points, qhull_options="Qbb Qc Qz Qt")
 
 # Für jeden Zielpixel: umgebendes Dreieck + baryzentrische Gewichte (einmalig).
-# Danach ist die Interpolation pro Datei nur noch eine gewichtete Summe.
 simplex = tri.find_simplex(target_points)
 inside = simplex >= 0
 _s = simplex[inside]
@@ -139,35 +152,38 @@ if not np.all(_ok):
     _w = _w[_ok]
 
 # Wettercodes (ww): Kantenlänge der Blöcke in Ausgabepixeln.
-# Global (~13 km) nutzt 8, ICON-EU (~6.5 km) -> 4. BLOCK = 1 = reines Nearest-Neighbor.
-WW_BLOCK = 4
+# BLOCK = 1 -> reines Nearest-Neighbor pro Ausgabepixel (bei 6.5 km sinnvoll).
+WW_BLOCK = 1
 
 if var_type == "ww":
     tree = cKDTree(points)
 
-    col_block = np.arange(GRID_WIDTH) // WW_BLOCK
+    # Spalten: gleich breite Blöcke in Längengrad
+    col_raw = (np.arange(GRID_WIDTH) // WW_BLOCK).astype(int)
+    _, col_block = np.unique(col_raw, return_inverse=True)
     n_cb = int(col_block.max()) + 1
     lon_c = np.array([lon_t[col_block == i].mean() for i in range(n_cb)])
 
-    # Blöcke sind in Web-Mercator quadratisch
+    # Zeilen: Blöcke sind in Web-Mercator quadratisch.
+    # np.unique sorgt dafür, dass keine leeren Blöcke entstehen (Mercator-Zeilenabstand
+    # ist immer >= Breitengrad-Abstand, daher würden sonst Indizes übersprungen).
     merc_y = np.log(np.tan(np.pi / 4 + np.radians(lat_t) / 2))
     dy_block = np.radians(WW_BLOCK * (lon_t[1] - lon_t[0]))
-    row_block = np.floor((merc_y[0] - merc_y) / dy_block).astype(int)
+    row_raw = np.floor((merc_y[0] - merc_y) / dy_block + 1e-9).astype(int)
+    _, row_block = np.unique(row_raw, return_inverse=True)
     n_rb = int(row_block.max()) + 1
     y_c = np.array([merc_y[row_block == i].mean() for i in range(n_rb)])
     lat_c = np.degrees(2 * np.arctan(np.exp(y_c)) - np.pi / 2)
 
     lon_cc, lat_cc = np.meshgrid(lon_c, lat_c)
-    coarse_points = np.column_stack((lon_cc.ravel() * COS_LAT0, lat_cc.ravel()))
+    coarse_points = np.column_stack(proj(lon_cc.ravel(), lat_cc.ravel()))
     _, ww_nn_idx = tree.query(coarse_points)
     ww_inside = tri.find_simplex(coarse_points) >= 0
 
 
 def to_target_grid(values_native):
-    """Werte auf dem Dreiecksgitter (1D) -> Zielraster (HEIGHT, WIDTH), row0 = Norden.
-    Außerhalb der Gitter-Hülle = NaN."""
-    if valid_idx is not None:
-        values_native = values_native[valid_idx]
+    """Werte auf dem (zugeschnittenen) Dreiecksgitter (1D) -> Zielraster
+    (HEIGHT, WIDTH), row0 = Norden. Außerhalb der Gitter-Hülle = NaN."""
     values_native = np.asarray(values_native, dtype=np.float64)
 
     if var_type == "ww":
@@ -178,6 +194,7 @@ def to_target_grid(values_native):
     out = np.full(n_target, np.nan, dtype=np.float64)
     out[inside] = np.einsum("ni,ni->n", values_native[_verts], _w)
     return out.reshape(GRID_HEIGHT, GRID_WIDTH)
+
 
 # ------------------------------
 # Dateien durchgehen
@@ -279,12 +296,7 @@ for filename in all_files_global:
             data = tp_all[3] - tp_all[0] if tp_all.shape[0] > 3 else tp_all[-1] - tp_all[0]
         else:
             data = tp_all
-    elif var_type == "dbz_cmax":
-        if "DBZ_CMAX" not in ds:
-            print(f"Keine DBZ_CMAX in {filename} ds.keys(): {list(ds.keys())}")
-            ds.close()
-            continue
-        data = ds["DBZ_CMAX"].values
+    # dbz_cmax gibt es nur in ICON-D2, nicht in ICON-EU -> Zweig entfernt.
     elif var_type == "wind":
         if "fg10" not in ds:
             print(f"Keine passende Windvariable in {filename} ds.keys(): {list(ds.keys())}")
@@ -359,7 +371,7 @@ for filename in all_files_global:
         print(f"{filename}: Datenform {data.shape} passt nicht zum Grid ({n_grid},), überspringe")
         continue
 
-    grid_data = to_target_grid(data)          # row0 = Norden, NaN außerhalb der Hülle
+    grid_data = to_target_grid(data[sel_idx])     # row0 = Norden, NaN außerhalb der Hülle
     q = encode_uint8(grid_data, enc)
 
     outname = f"{var_type}_{valid_time_local:%Y%m%d_%H%M}"

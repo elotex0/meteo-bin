@@ -18,9 +18,9 @@ FILENAME_RE = re.compile(r"^(?P<var_type>.+)_(?P<date>\d{8})_(?P<time>\d{4})$")
 # Festes ICON-D2-Raster (regular-lat-lon, EPSG:4326, row0 = Norden).
 # Muss zu "extent" in generate_pngs.py passen.
 GRID = {
-    "extent": [-3.94, 43.18, 20.34, 58.08],   # lon_min, lat_min, lon_max, lat_max
-    "width": 1215,
-    "height": 746,
+    "extent": [-23.5, 29.5, 62.5, 70.5],   # lon_min, lat_min, lon_max, lat_max
+    "width": 1377,
+    "height": 657,
     "nodata": NODATA_U8,
     "levels": LEVELS,
 }
