@@ -47,7 +47,7 @@ for gp in (clat_path, clon_path):
 # Breite/Höhe werden aus Extent und Auflösung berechnet.
 # Der Ausschnitt darf die Datumsgrenze (+-180) nicht überqueren.
 GRID_LON_MIN, GRID_LAT_MIN, GRID_LON_MAX, GRID_LAT_MAX = -4.0, 43.0, 20.5, 58.25
-GRID_RES = 0.125
+GRID_RES = 0.0625
 
 GRID_WIDTH = int(round((GRID_LON_MAX - GRID_LON_MIN) / GRID_RES)) + 1    # 689
 GRID_HEIGHT = int(round((GRID_LAT_MAX - GRID_LAT_MIN) / GRID_RES)) + 1   # 329

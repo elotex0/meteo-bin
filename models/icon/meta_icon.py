@@ -19,8 +19,8 @@ FILENAME_RE = re.compile(r"^(?P<var_type>.+)_(?P<date>\d{8})_(?P<time>\d{4})$")
 # Muss zu "extent" in generate_pngs.py passen.
 GRID = {
     "extent": [-4.0, 43.0, 20.5, 58.25],   # lon_min, lat_min, lon_max, lat_max
-    "width": 197,
-    "height": 123,
+    "width": 393,
+    "height": 245,
     "nodata": NODATA_U8,
     "levels": LEVELS,
 }

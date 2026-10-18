@@ -69,7 +69,7 @@ jobs:
             variables: "t2m ww"
 
           - name: precip_wind
-            downloads: "VMAX_10M:wind:wind:0"
+            downloads: "VMAX_10M:wind:wind:1"
             variables: "wind"
 
     steps:
