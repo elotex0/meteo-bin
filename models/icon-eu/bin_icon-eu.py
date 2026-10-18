@@ -42,8 +42,8 @@ for gp in (clat_path, clon_path):
 # ------------------------------
 # regular-lat-lon, EPSG:4326, row0 = Norden, Werte = Pixelzentren.
 # MUSS zu GRID in meta_icon-eu.py passen (dort wird die Dateigröße geprüft).
-GRID_LON_MIN, GRID_LAT_MIN, GRID_LON_MAX, GRID_LAT_MAX = -23.5, 29.5, 62.5, 70.5
-GRID_WIDTH, GRID_HEIGHT = 1377, 657   # (86/0.0625)+1 , (41/0.0625)+1
+GRID_LON_MIN, GRID_LAT_MIN, GRID_LON_MAX, GRID_LAT_MAX = -4.0, 43.0, 20.5, 58.25
+GRID_WIDTH, GRID_HEIGHT = 393, 245   # (24.5/0.0625)+1 , (15.25/0.0625)+1
 
 lon_t = np.linspace(GRID_LON_MIN, GRID_LON_MAX, GRID_WIDTH)
 lat_t = np.linspace(GRID_LAT_MAX, GRID_LAT_MIN, GRID_HEIGHT)   # Nord -> Süd
@@ -52,8 +52,8 @@ lon_tt, lat_tt = np.meshgrid(lon_t, lat_t)                     # Shape (HEIGHT, 
 # Winkeltreue (stereographische) Projektion um die Domain-Mitte, damit die
 # nahezu gleichseitigen Dreiecke des Icosaedergitters auch bei der großen
 # Domain unverzerrt bleiben.
-_LON0 = np.radians(19.5)
-_LAT0 = np.radians(50.0)
+_LON0 = np.radians(8.25)
+_LAT0 = np.radians(50.6)
 
 
 def proj(lon_deg, lat_deg):
