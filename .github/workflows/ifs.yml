@@ -94,7 +94,7 @@ jobs:
       - name: Generate PNGs
         run: |
           mkdir -p "ifs/$VARIABLE"
-          python scripts/generate_pngs.py "data/$VARIABLE" "ifs/$VARIABLE" "$VARIABLE"
+          python models/ifs/bin_ifs.py "data/$VARIABLE" "ifs/$VARIABLE" "$VARIABLE"
 
       # Ganzes ifs/-Verzeichnis hochladen, damit der Variablenordner im Artifact erhalten bleibt
       - name: Upload PNGs artifact
@@ -142,7 +142,7 @@ jobs:
           path: ifs/${{ needs.prepare.outputs.run }}
 
       - name: Generate Metadata
-        run: python scripts/generate_metadata.py "ifs/$RUN" "$RUN" "$DATE"
+        run: python models/ifs/meta_ifs.py "ifs/$RUN" "$RUN" "$DATE"
 
       # Parallel gzip-komprimieren (Dateiname bleibt gleich, Inhalt ist gzip)
       - name: Dateien mit gzip komprimieren
