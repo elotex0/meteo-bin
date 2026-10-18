@@ -138,10 +138,29 @@ if not np.all(_ok):
     _verts = _verts[_ok]
     _w = _w[_ok]
 
-nn_idx = None
+# Wettercodes (ww): Kantenlänge der Blöcke in Ausgabepixeln.
+# Global (~13 km) nutzt 8, ICON-EU (~6.5 km) -> 4. BLOCK = 1 = reines Nearest-Neighbor.
+WW_BLOCK = 4
+
 if var_type == "ww":
-    # Wettercodes dürfen nicht gemittelt werden -> nächster Gitterpunkt
-    _, nn_idx = cKDTree(points).query(target_points)
+    tree = cKDTree(points)
+
+    col_block = np.arange(GRID_WIDTH) // WW_BLOCK
+    n_cb = int(col_block.max()) + 1
+    lon_c = np.array([lon_t[col_block == i].mean() for i in range(n_cb)])
+
+    # Blöcke sind in Web-Mercator quadratisch
+    merc_y = np.log(np.tan(np.pi / 4 + np.radians(lat_t) / 2))
+    dy_block = np.radians(WW_BLOCK * (lon_t[1] - lon_t[0]))
+    row_block = np.floor((merc_y[0] - merc_y) / dy_block).astype(int)
+    n_rb = int(row_block.max()) + 1
+    y_c = np.array([merc_y[row_block == i].mean() for i in range(n_rb)])
+    lat_c = np.degrees(2 * np.arctan(np.exp(y_c)) - np.pi / 2)
+
+    lon_cc, lat_cc = np.meshgrid(lon_c, lat_c)
+    coarse_points = np.column_stack((lon_cc.ravel() * COS_LAT0, lat_cc.ravel()))
+    _, ww_nn_idx = tree.query(coarse_points)
+    ww_inside = tri.find_simplex(coarse_points) >= 0
 
 
 def to_target_grid(values_native):
@@ -151,13 +170,14 @@ def to_target_grid(values_native):
         values_native = values_native[valid_idx]
     values_native = np.asarray(values_native, dtype=np.float64)
 
-    out = np.full(n_target, np.nan, dtype=np.float64)
-    if nn_idx is not None:
-        out[inside] = values_native[nn_idx[inside]]
-    else:
-        out[inside] = np.einsum("ni,ni->n", values_native[_verts], _w)
-    return out.reshape(GRID_HEIGHT, GRID_WIDTH)
+    if var_type == "ww":
+        coarse = np.where(ww_inside, values_native[ww_nn_idx], np.nan)
+        coarse = coarse.reshape(n_rb, n_cb)
+        return coarse[np.ix_(row_block, col_block)]
 
+    out = np.full(n_target, np.nan, dtype=np.float64)
+    out[inside] = np.einsum("ni,ni->n", values_native[_verts], _w)
+    return out.reshape(GRID_HEIGHT, GRID_WIDTH)
 
 # ------------------------------
 # Dateien durchgehen
