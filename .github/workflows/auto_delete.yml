@@ -19,6 +19,7 @@ jobs:
               "ICON-RUC Pipeline",
               "ICON-EU Pipeline",
               "ICON Pipeline",
+              "ECMWF IFS Pipeline",
             ];
 
             const keepLatest = 1;
