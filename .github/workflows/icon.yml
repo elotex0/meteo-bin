@@ -1,0 +1,212 @@
+name: ICON Pipeline
+
+on:
+  workflow_dispatch:
+
+# Verhindert, dass zwei Läufe gleichzeitig auf R2 schreiben
+concurrency:
+  group: icon-pipeline
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env: 
+  PYTHONPATH: ${{ github.workspace }}/tools
+  HOURLY_MAX: 77          # Stunden START..77 im 1-Stunden-Schritt
+  STEP3_FROM: 78          # danach 78..MAX_HOUR im 3-Stunden-Schritt
+  MAX_HOUR: 180
+  DL_PARALLEL: 16         # gleichzeitige Downloads pro Job
+  ARTIFACT_DAYS: 1        # Zwischenergebnisse werden nur kurz gebraucht
+
+jobs: 
+  # ---------------------------------------------------------------------------
+  # 1) RUN und DATE einmalig bestimmen, damit alle Jobs denselben Modelllauf nutzen
+  # ---------------------------------------------------------------------------
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.set_run_date.outputs.run }}
+      date: ${{ steps.set_run_date.outputs.date }}
+      date_compact: ${{ steps.set_run_date.outputs.date_compact }}
+    steps:
+      - name: Set RUN and DATE
+        id: set_run_date
+        run: |
+          HOUR=$(date -u +%H)
+          case $HOUR in
+            03|04|05|09|11) RUN=00 ;;
+            15|16|17|20) RUN=12 ;;
+            *)
+              echo "::error::Startzeit ${HOUR} UTC ist nicht vorgesehen (erlaubt: 03-05, 09-11, 15-20, 21-23)"
+              exit 1 ;;
+          esac
+          echo "run=$RUN" >> "$GITHUB_OUTPUT"
+          echo "date=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+          echo "date_compact=$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"
+  # ---------------------------------------------------------------------------
+  # 2) Pro Gruppe: Daten direkt vom DWD laden und PNGs/Bins erzeugen
+  # ---------------------------------------------------------------------------
+  generate_pngs:
+    runs-on: ubuntu-latest
+    needs: prepare
+    timeout-minutes: 60
+    env:
+      RUN: ${{ needs.prepare.outputs.run }}
+      DATE: ${{ needs.prepare.outputs.date }}
+      DOWNLOADS: ${{ matrix.downloads }}
+      VARIABLES: ${{ matrix.variables }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # downloads: DWD_PARAMETER:zielordner:dateiprefix:startstunde
+          #            (DWD_PARAMETER darf Pfadteile enthalten, z. B. T/lvt1/100/lv1/85000)
+          # variables: Namen der Variablen (= Eingabeordner unter data/)
+          - name: temp_ww
+            downloads: "T_2M:t2m:t2m:0 WW:ww:ww:0"
+            variables: "t2m ww"
+
+          - name: precip_wind
+            downloads: "VMAX_10M:wind:wind:0"
+            variables: "wind"
+
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+    # Gitterkoordinaten (liegen wie vorher unter data/grid, das Script findet sie dort)
+      - name: Download grid (clat/clon)
+        run: |
+          mkdir -p data/grid
+          base=https://github.com/elotex0/meteo-bin/releases/download/icon
+          wget -q "$base/clat.grib2" -O data/grid/clat.grib2 &
+          wget -q "$base/clon.grib2" -O data/grid/clon.grib2 &
+          wait
+    
+    # Alle Parameter x Stunden dieser Gruppe laufen in einem gemeinsamen Pool.
+      # Stunden: START..HOURLY_MAX stündlich, danach bis MAX_HOUR im 3-Stunden-Schritt.
+      - name: Download GRIB2 files (nur benötigte Parameter)
+        run: |
+          export DATE RUN
+          for spec in $DOWNLOADS; do
+            IFS=: read -r PARAM DIR PREFIX START <<< "$spec"
+            mkdir -p "data/$DIR"
+            { seq "$START" "$HOURLY_MAX"; seq "$STEP3_FROM" 3 "$MAX_HOUR"; } | while read -r h; do
+              echo "$PARAM $DIR $PREFIX $h"
+            done
+          done | xargs -P "$DL_PARALLEL" -L1 bash -c '
+            PARAM=$0; DIR=$1; PREFIX=$2
+            i=$(printf "%03d" "$3")
+            URL="https://opendata.dwd.de/weather/nwp/v1/m/icon/p/${PARAM}/r/${DATE}T${RUN}:00/s/PT${i}H00M.grib2"
+            OUT="data/${DIR}/${PREFIX}_${i}.grib2"
+            wget -q --tries=3 --timeout=30 -O "$OUT" "$URL" \
+              || { echo "Datei $URL nicht verfügbar, überspringe..."; rm -f "$OUT"; }
+          '
+
+    # Abbruch, wenn für einen Parameter gar nichts geladen wurde
+      - name: Check downloads
+        run: |
+          for spec in $DOWNLOADS; do
+            IFS=: read -r PARAM DIR PREFIX START <<< "$spec"
+            n=$(find "data/$DIR" -name '*.grib2' | wc -l)
+            echo "$PARAM: $n Dateien"
+            if [ "$n" -eq 0 ]; then
+              echo "::error::Keine Dateien für $PARAM (Run $RUN, $DATE) gefunden"
+              exit 1
+            fi
+          done
+
+    # Jede Variable hat ihren eigenen Eingabeordner, alle laufen parallel
+      - name: Generate PNGs
+        run: |
+          printf '%s\n' $VARIABLES | xargs -P "$(nproc)" -I{} bash -c '
+            cp -r data/grid "data/grid_{}"
+            mkdir -p "icon/{}"
+            python models/icon/bin_icon.py "data/{}" "icon/{}" "{}" "data/grid_{}"
+          '
+
+      - name: Upload PNGs artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: icon-${{ matrix.name }}
+          path: icon/
+          retention-days: ${{ env.ARTIFACT_DAYS }}
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # 3) Ergebnisse zusammenführen, Metadaten erzeugen, komprimieren, nach R2 hochladen
+  # ---------------------------------------------------------------------------
+  deploy_to_r2:
+    runs-on: ubuntu-latest
+    needs: [prepare, generate_pngs]
+    timeout-minutes: 30
+    env:
+      RUN: ${{ needs.prepare.outputs.run }}
+      DATE_COMPACT: ${{ needs.prepare.outputs.date_compact }}
+      BUCKET: ${{ secrets.ICON_BUCKET }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.ICON_ACCESS_KEY }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.ICON_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      R2_ENDPOINT: https://${{ secrets.ICON_ACCOUNT_ID }}.r2.cloudflarestorage.com
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # Struktur danach: iconeu/<RUN>/<variable>/...
+      - name: Download all PNG artifacts (merged)
+        uses: actions/download-artifact@v8
+        with:
+          pattern: icon-*
+          merge-multiple: true
+          path: icon/${{ needs.prepare.outputs.run }}
+
+      - name: Show merged structure
+        run: ls -R "icon/$RUN" | head -50
+
+      # Das Meta-Script bekommt wie im Original das Datum ohne Bindestriche (YYYYMMDD)
+      - name: Generate Metadata
+        run: python models/icon/meta_icon.py "icon/$RUN" "$RUN" "$DATE_COMPACT"
+
+      - name: Dateien mit gzip komprimieren
+        run: |
+          find "icon/$RUN" -type f -print0 \
+            | xargs -0 -P "$(nproc)" -I{} sh -c 'gzip -9 -n -c "{}" > "{}.tmp" && mv "{}.tmp" "{}"'
+
+      # Alle alten Run-Ordner löschen, den aktuellen behalten
+      - name: Clean old runs on R2 except current
+        run: |
+          for run_folder in $(aws s3 ls "s3://$BUCKET/icon/" --endpoint-url "$R2_ENDPOINT" | awk '/PRE/ {print $2}' | sed 's#/##'); do
+            if [ "$run_folder" != "$RUN" ]; then
+              aws s3 rm "s3://$BUCKET/icon/$run_folder/" --recursive --endpoint-url "$R2_ENDPOINT"
+            fi
+          done
+
+      # Erst die Daten, zuletzt die metadata.json
+      - name: Upload current run and metadata.json to R2
+        run: |
+          aws s3 sync "./icon/$RUN/" "s3://$BUCKET/icon/$RUN/" \
+            --endpoint-url "$R2_ENDPOINT" \
+            --content-type application/gzip
+
+          aws s3 cp ./icon/metadata.json "s3://$BUCKET/icon/metadata.json" \
+            --endpoint-url "$R2_ENDPOINT"
