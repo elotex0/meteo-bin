@@ -6,6 +6,7 @@ ENCODING = {
     "t850":        {"vmin": -35.0, "vmax": 45.0,   "transform": "linear", "unit": "°C"},
     "wind":        {"vmin": 0.0,   "vmax": 250.0,  "transform": "linear", "unit": "km/h"},
     "tp":          {"vmin": 0.0,   "vmax": 125.0,  "transform": "sqrt",   "unit": "mm"},
+    "tp6h":        {"vmin": 0.0,   "vmax": 300.0,  "transform": "sqrt",   "unit": "mm"},
     "tp_acc":      {"vmin": 0.0,   "vmax": 500.0,  "transform": "sqrt",   "unit": "mm"},
     "cape_ml":     {"vmin": 0.0,   "vmax": 5000.0, "transform": "sqrt",   "unit": "J/kg"},
     "dbz_cmax":    {"vmin": -20.0, "vmax": 80.0,   "transform": "linear", "unit": "dBZ"},
