@@ -1,0 +1,202 @@
+name: NOAA GFS Pipeline
+
+on:
+  workflow_dispatch:
+
+# Verhindert, dass zwei Läufe gleichzeitig auf R2 schreiben und sich gegenseitig stören
+concurrency:
+  group: gfs-pipeline
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  ARTIFACT_DAYS: 1      # Zwischenergebnisse werden nur kurz gebraucht
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1) RUN und DATE einmalig bestimmen, damit alle Jobs denselben Modelllauf nutzen
+  # ---------------------------------------------------------------------------
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.set_run_date.outputs.run }}
+      date: ${{ steps.set_run_date.outputs.date }}
+    steps:
+      - name: Set RUN and DATE
+        id: set_run_date
+        run: |
+          HOUR=$(date -u +%H)
+          case $HOUR in
+            05|06|07) RUN=00 ;;
+            11|12|13|16) RUN=06 ;;
+            17|18|19|20|22) RUN=12 ;;
+            23|00|01) RUN=18 ;;
+          esac
+          DATE=$(date -u +%Y%m%d)
+          echo "RUN=$RUN" >> $GITHUB_ENV
+          echo "DATE=$DATE" >> $GITHUB_ENV
+          echo "run=$RUN" >> $GITHUB_OUTPUT
+          echo "date=$DATE" >> $GITHUB_OUTPUT
+
+  # ---------------------------------------------------------------------------
+  # 2) Pro Gruppe: GRIB2 laden und direkt PNGs erzeugen (alles im selben Matrix-Job)
+  # ---------------------------------------------------------------------------
+  generate_pngs:
+    runs-on: ubuntu-latest
+    needs: prepare
+    timeout-minutes: 60
+    env:
+      RUN: ${{ needs.prepare.outputs.run }}
+      DATE: ${{ needs.prepare.outputs.date }}
+      # Matrix-Werte als Umgebungsvariablen, damit die Shell-Skripte lesbar bleiben
+      DOWNLOADS: ${{ matrix.downloads }}
+      VARIABLES: ${{ matrix.variables }}
+    strategy:
+      fail-fast: false      # eine fehlgeschlagene Gruppe stoppt die anderen nicht
+      matrix:
+        include:
+          # downloads: Download-Skripte in download/gfs/ (ohne .py), laufen parallel
+          # variables: Variablen, deren PNGs erzeugt werden (Eingabe: data/<variable>)
+          - name: temp_wind
+            downloads: "download_gfs_t2m download_gfs_wind"
+            variables: "t2m wind"
+
+          - name: precip
+            downloads: "download_gfs_tp download_gfs_tp_acc"
+            variables: "tp tp_acc"
+
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v7
+        with:
+          token: ${{ secrets.GFS_PAT }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: pip            # ersetzt den manuellen actions/cache-Schritt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # Nur die Skripte dieser Gruppe; jeder Prozess wird einzeln abgewartet,
+      # damit ein fehlgeschlagener Download den Job auch wirklich fehlschlagen lässt
+      - name: Download GRIB2 files (nur benötigte Variablen)
+        run: |
+          echo "🔹 Lade ${DOWNLOADS} (DATE=$DATE, RUN=$RUN)"
+          pids=()
+          for script in $DOWNLOADS; do
+            python "download/gfs/$script.py" &
+            pids+=($!)
+          done
+
+          fail=0
+          for pid in "${pids[@]}"; do
+            wait "$pid" || fail=1
+          done
+          [ "$fail" -eq 0 ] || { echo "::error::Mindestens ein Download ist fehlgeschlagen"; exit 1; }
+
+      # Abbruch, wenn für eine Variable gar nichts geladen wurde
+      - name: Check downloads
+        run: |
+          for var in $VARIABLES; do
+            n=$(find "data/$var" -type f 2>/dev/null | wc -l)
+            echo "$var: $n Dateien"
+            if [ "$n" -eq 0 ]; then
+              echo "::error::Keine Dateien für $var (Run $RUN, $DATE) gefunden"
+              exit 1
+            fi
+          done
+
+      # Variablen dieser Gruppe parallel verarbeiten
+      - name: Generate PNGs
+        run: |
+          pids=()
+          for var in $VARIABLES; do
+            mkdir -p "gfs/$var"
+            python models/gfs/bin_gfs.py "data/$var" "gfs/$var" "$var" &
+            pids+=($!)
+          done
+
+          fail=0
+          for pid in "${pids[@]}"; do
+            wait "$pid" || fail=1
+          done
+          [ "$fail" -eq 0 ] || { echo "::error::PNG-Erzeugung fehlgeschlagen"; exit 1; }
+
+      # Ganzes gfs/-Verzeichnis hochladen, damit die Variablenordner im Artifact erhalten bleiben
+      - name: Upload PNGs artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: gfs-${{ matrix.name }}
+          path: gfs/
+          retention-days: ${{ env.ARTIFACT_DAYS }}
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # 3) Ergebnisse zusammenführen, Metadaten erzeugen, komprimieren, nach R2 hochladen
+  # ---------------------------------------------------------------------------
+  deploy_to_r2:
+    runs-on: ubuntu-latest
+    needs: [prepare, generate_pngs]
+    timeout-minutes: 30
+    env:
+      RUN: ${{ needs.prepare.outputs.run }}
+      DATE: ${{ needs.prepare.outputs.date }}
+      BUCKET: ${{ secrets.GFS_BUCKET }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.GLOBAL_ACCESS_KEY}}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.GLOBAL_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto    # von R2 erwartet, vermeidet Region-Warnungen
+      R2_ENDPOINT: https://${{ secrets.GLOBAL_ACCOUNT_ID }}.r2.cloudflarestorage.com
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # Alle Gruppen-Artifacts landen direkt in einem Ordner (Struktur: gfs/<RUN>/<variable>/...)
+      - name: Download all PNG artifacts (merged)
+        uses: actions/download-artifact@v8
+        with:
+          pattern: gfs-*
+          merge-multiple: true
+          path: gfs/${{ needs.prepare.outputs.run }}
+
+      - name: Generate Metadata
+        run: python models/gfs/meta_gfs.py "gfs/$RUN" "$RUN" "$DATE"
+
+      # Parallel gzip-komprimieren (Dateiname bleibt gleich, Inhalt ist gzip)
+      - name: Dateien mit gzip komprimieren
+        run: |
+          find "gfs/$RUN" -type f -print0 \
+            | xargs -0 -P "$(nproc)" -I{} sh -c 'gzip -9 -n -c "{}" > "{}.tmp" && mv "{}.tmp" "{}"'
+
+      # Alle alten Run-Ordner löschen, den aktuellen behalten
+      - name: Clean old runs on R2 except current
+        run: |
+          for run_folder in $(aws s3 ls "s3://$BUCKET/gfs/" --endpoint-url "$R2_ENDPOINT" | awk '/PRE/ {print $2}' | sed 's#/##'); do
+            if [ "$run_folder" != "$RUN" ]; then
+              aws s3 rm "s3://$BUCKET/gfs/$run_folder/" --recursive --endpoint-url "$R2_ENDPOINT"
+            fi
+          done
+
+      # Erst die Daten, zuletzt die metadata.json, damit Clients nie auf noch fehlende Dateien verweisen
+      - name: Upload current run and metadata.json to R2
+        run: |
+          aws s3 sync "./gfs/$RUN/" "s3://$BUCKET/gfs/$RUN/" \
+            --endpoint-url "$R2_ENDPOINT" \
+            --content-type application/gzip
+
+          aws s3 cp ./gfs/metadata.json "s3://$BUCKET/gfs/metadata.json" \
+            --endpoint-url "$R2_ENDPOINT"
