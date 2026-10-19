@@ -71,8 +71,6 @@ jobs:
     steps:
       - name: Checkout Repo
         uses: actions/checkout@v7
-        with:
-          token: ${{ secrets.GFS_PAT }}
 
       - name: Setup Python
         uses: actions/setup-python@v7
