@@ -1,0 +1,183 @@
+name: ECMWF AIFS Pipeline
+
+on:
+  workflow_dispatch:
+
+# Verhindert, dass zwei Läufe gleichzeitig auf R2 schreiben und sich gegenseitig stören
+concurrency:
+  group: ecmwf-aifs-pipeline
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  PYTHONPATH: ${{ github.workspace }}/tools
+  ARTIFACT_DAYS: 1      # Zwischenergebnisse werden nur kurz gebraucht
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1) RUN und DATE einmalig bestimmen, damit alle Jobs denselben Modelllauf nutzen
+  # ---------------------------------------------------------------------------
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.set_run_date.outputs.run }}
+      date: ${{ steps.set_run_date.outputs.date }}
+    steps:
+      - name: Set RUN and DATE
+        id: set_run_date
+        run: |
+          HOUR=$(date -u +%H)
+          case $HOUR in
+            07|08|09|10) RUN=00 ;;
+            13|14|15) RUN=06 ;;
+            17|18|19|21) RUN=12 ;;
+            23|00|01) RUN=18 ;;
+          esac
+          YEAR=$(date -u +%Y)
+          MONTH=$(date -u +%m)
+          DAY=$(date -u +%d)
+          DATE=$(date -u +%Y%m%d)
+          # set env variables
+          echo "RUN=$RUN" >> $GITHUB_ENV
+          echo "YEAR=$YEAR" >> $GITHUB_ENV
+          echo "MONTH=$MONTH" >> $GITHUB_ENV
+          echo "DAY=$DAY" >> $GITHUB_ENV
+          echo "DATE=$DATE" >> $GITHUB_ENV
+          # set step output for job output
+          echo "run=$RUN" >> $GITHUB_OUTPUT
+          echo "date=$DATE" >> $GITHUB_OUTPUT
+
+  # ---------------------------------------------------------------------------
+  # 2) Pro Matrix-Eintrag: OM-Dateien von Open-Meteo laden und PNGs erzeugen
+  # ---------------------------------------------------------------------------
+  generate_pngs:
+    runs-on: ubuntu-latest
+    needs: prepare
+    timeout-minutes: 60
+    env:
+      RUN: ${{ needs.prepare.outputs.run }}
+      DATE: ${{ needs.prepare.outputs.date }}
+      # Listen mit Leerzeichen: erster Name in variable gehört zum ersten Namen in om_file
+      VARIABLE: ${{ matrix.variable }}
+      OM_FILE: ${{ matrix.om_file }}
+    strategy:
+      fail-fast: false      # ein fehlgeschlagener Eintrag stoppt die anderen nicht
+      matrix:
+        include:
+          # name: Artifact-Name, variable: Ausgabeordner, om_file: Dateiname bei Open-Meteo
+          - name: t2m-tp6h
+            variable: "t2m tp6h"
+            om_file: "temperature_2m precipitation"
+          - name: wind
+            variable: wind
+            om_file: wind_gusts_10m
+
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Download OM files from Open-Meteo S3
+        run: |
+          set -e
+          BASE_URL="https://openmeteo.s3.amazonaws.com/data_run/ecmwf_ifs025/${DATE:0:4}/${DATE:4:2}/${DATE:6:2}/${RUN}00Z"
+          read -ra VARS <<< "$VARIABLE"
+          read -ra FILES <<< "$OM_FILE"
+          for i in "${!VARS[@]}"; do
+            v="${VARS[$i]}"; f="${FILES[$i]}"
+            mkdir -p "data/$v"
+            echo "Lade: $BASE_URL/$f.om"
+            curl -fSL --retry 3 --max-time 600 "$BASE_URL/$f.om" -o "data/$v/$f.om"
+          done
+
+      - name: Generate PNGs
+        run: |
+          set -e
+          for v in $VARIABLE; do
+            mkdir -p "aifs/$v"
+            python models/aifs/bin_aifs.py "data/$v" "aifs/$v" "$v"
+          done
+
+      # Ganzes aifs/-Verzeichnis hochladen, damit die Variablenordner im Artifact erhalten bleiben
+      - name: Upload PNGs artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: aifs-${{ matrix.name }}
+          path: aifs/
+          retention-days: ${{ env.ARTIFACT_DAYS }}
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # 3) Ergebnisse zusammenführen, Metadaten erzeugen, komprimieren, nach R2 hochladen
+  # ---------------------------------------------------------------------------
+  deploy_to_r2:
+    runs-on: ubuntu-latest
+    needs: [prepare, generate_pngs]
+    timeout-minutes: 30
+    env:
+      RUN: ${{ needs.prepare.outputs.run }}
+      DATE: ${{ needs.prepare.outputs.date }}
+      BUCKET: ${{ secrets.ECMWF_BUCKET }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.GLOBAL_ACCESS_KEY }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.GLOBAL_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto    # von R2 erwartet, vermeidet Region-Warnungen
+      R2_ENDPOINT: https://${{ secrets.GLOBAL_ACCOUNT_ID }}.r2.cloudflarestorage.com
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # Alle Artifacts landen direkt in einem Ordner (Struktur: aifs/<RUN>/<variable>/...)
+      - name: Download all PNG artifacts (merged)
+        uses: actions/download-artifact@v8
+        with:
+          pattern: aifs-*
+          merge-multiple: true
+          path: aifs/${{ needs.prepare.outputs.run }}
+
+      - name: Generate Metadata
+        run: python models/aifs/meta_aifs.py "aifs/$RUN" "$RUN" "$DATE"
+
+      # Parallel gzip-komprimieren (Dateiname bleibt gleich, Inhalt ist gzip)
+      - name: Dateien mit gzip komprimieren
+        run: |
+          find "aifs/$RUN" -type f -print0 \
+            | xargs -0 -P "$(nproc)" -I{} sh -c 'gzip -9 -n -c "{}" > "{}.tmp" && mv "{}.tmp" "{}"'
+
+      # Alle alten Run-Ordner löschen, den aktuellen behalten
+      - name: Clean old runs on R2 except current
+        run: |
+          for run_folder in $(aws s3 ls "s3://$BUCKET/aifs/" --endpoint-url "$R2_ENDPOINT" | awk '/PRE/ {print $2}' | sed 's#/##'); do
+            if [ "$run_folder" != "$RUN" ]; then
+              aws s3 rm "s3://$BUCKET/aifs/$run_folder/" --recursive --endpoint-url "$R2_ENDPOINT"
+            fi
+          done
+
+      # Erst die Daten, zuletzt die metadata.json, damit Clients nie auf noch fehlende Dateien verweisen
+      - name: Upload current run and metadata.json to R2
+        run: |
+          aws s3 sync "./aifs/$RUN/" "s3://$BUCKET/aifs/$RUN/" \
+            --endpoint-url "$R2_ENDPOINT" \
+            --content-type application/gzip
+
+          aws s3 cp ./aifs/metadata.json "s3://$BUCKET/aifs/metadata.json" \
+            --endpoint-url "$R2_ENDPOINT"
