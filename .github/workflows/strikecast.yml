@@ -1,0 +1,184 @@
+name: StrikeCAST – Gewitterwahrscheinlichkeit
+
+on:
+  workflow_dispatch:
+
+# Verhindert, dass zwei Läufe gleichzeitig auf R2 schreiben und sich gegenseitig stören
+concurrency:
+  group: strikecast-pipeline
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  PYTHONPATH: ${{ github.workspace }}/tools/encoding
+  ARTIFACT_DAYS: 1      # Zwischenergebnisse werden nur kurz gebraucht
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1) RUN und DATE einmalig bestimmen, damit alle Jobs denselben Modelllauf nutzen
+  # ---------------------------------------------------------------------------
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.set_run_date.outputs.run }}
+      date: ${{ steps.set_run_date.outputs.date }}
+    steps:
+      - name: Set RUN and DATE
+        id: set_run_date
+        run: |
+          HOUR=$(date -u +%H)
+          case $HOUR in
+            07|08|09|10) RUN=00 ;;
+            12|13|14|15) RUN=06 ;;
+            19|20|21|22) RUN=12 ;;
+            00|01|02|03|04) RUN=18 ;;
+            *) echo "Keine passende Run-Zeit für Stunde $HOUR (UTC)"; exit 1 ;;
+          esac
+
+          # Der 18z-Lauf wird nach Mitternacht (UTC) verarbeitet -> Datum von gestern
+          if [ "$RUN" = "18" ]; then
+            DATE=$(date -u -d "yesterday" +%Y%m%d)
+          else
+            DATE=$(date -u +%Y%m%d)
+          fi
+          # set env variables
+          echo "RUN=$RUN" >> $GITHUB_ENV
+          echo "DATE=$DATE" >> $GITHUB_ENV
+          # set step output for job output
+          echo "run=$RUN" >> $GITHUB_OUTPUT
+          echo "date=$DATE" >> $GITHUB_OUTPUT
+
+  # ---------------------------------------------------------------------------
+  # 2) Daten laden, Prädiktoren berechnen, Binärraster erzeugen
+  # ---------------------------------------------------------------------------
+  strikecast:
+    runs-on: ubuntu-latest
+    needs: prepare
+    timeout-minutes: 90
+    env:
+      RUN: ${{ needs.prepare.outputs.run }}
+      DATE: ${{ needs.prepare.outputs.date }}
+
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: pip            # ersetzt den manuellen actions/cache-Schritt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Download LUT
+        run: |
+          mkdir -p data/lut
+          curl -fSL --retry 3 \
+            https://github.com/elotex0/meteo-bin/releases/download/strikecast/lightning_lut.nc \
+            -o data/lut/lightning_lut.nc
+
+      - name: Download Z
+        run: |
+          mkdir -p data/gewitter/z
+          curl -fSL --retry 3 \
+            https://github.com/elotex0/meteo-bin/releases/download/strikecast/z_step000.grib2 \
+            -o data/gewitter/z/z_step000.grib2
+
+      - name: Download ECMWF data
+        run: python download/strikecast/download_strikecast.py
+
+      - name: Process – Prädiktoren berechnen
+        run: python tools/strikecast/predict_strikecast.py
+
+      # Beide Generatoren parallel; schlägt einer fehl, schlägt der Step fehl
+      - name: Generate binary rasters
+        run: |
+          mkdir -p pngs/gewitter pngs/scp
+          python models/strikecast/bin_strikecast_gewitter.py &
+          PID=$!
+          python models/strikecast/bin_strikecast_scp.py
+          wait $PID
+
+      # Ganzes pngs/-Verzeichnis hochladen, damit die Variablenordner erhalten bleiben
+      - name: Upload PNGs artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: strikecast-pngs
+          path: pngs/
+          retention-days: ${{ env.ARTIFACT_DAYS }}
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # 3) Metadaten erzeugen, komprimieren, nach R2 hochladen
+  # ---------------------------------------------------------------------------
+  deploy_to_r2:
+    runs-on: ubuntu-latest
+    needs: [prepare, strikecast]
+    timeout-minutes: 30
+    env:
+      RUN: ${{ needs.prepare.outputs.run }}
+      DATE: ${{ needs.prepare.outputs.date }}
+      BUCKET: ${{ secrets.STRIKECAST_BUCKET }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.GLOBAL_ACCESS_KEY }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.GLOBAL_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto    # von R2 erwartet, vermeidet Region-Warnungen
+      R2_ENDPOINT: https://${{ secrets.GLOBAL_ACCOUNT_ID }}.r2.cloudflarestorage.com
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v7
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Download PNGs artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: strikecast-pngs
+          path: pngs/
+
+      - name: Generate Metadata
+        run: |
+          python models/strikecast/meta_strikecast.py pngs/ "$RUN" "$DATE"
+          ls -la pngs/ pngs/metadata.json
+
+      # Parallel gzip-komprimieren (Dateiname bleibt gleich, Inhalt ist gzip)
+      - name: Dateien mit gzip komprimieren
+        run: |
+          find pngs/gewitter pngs/scp -type f -print0 \
+            | xargs -0 -P "$(nproc)" -I{} sh -c 'gzip -9 -n -c "{}" > "{}.tmp" && mv "{}.tmp" "{}"'
+          f=$(find pngs/gewitter -type f | head -1)
+          file "$f"    # sollte "gzip compressed data" zeigen
+
+      # Alle alten Run-Ordner löschen, den aktuellen behalten
+      - name: Clean old runs on R2 except current
+        run: |
+          for run_folder in $(aws s3 ls "s3://$BUCKET/strikecast/" --endpoint-url "$R2_ENDPOINT" | awk '/PRE/ {print $2}' | sed 's#/##'); do
+            if [ "$run_folder" != "$RUN" ]; then
+              aws s3 rm "s3://$BUCKET/strikecast/$run_folder/" --recursive --endpoint-url "$R2_ENDPOINT"
+            fi
+          done
+
+      # Erst die Daten, zuletzt die metadata.json, damit Clients nie auf noch fehlende Dateien verweisen
+      - name: Upload current run and metadata.json to R2
+        run: |
+          aws s3 sync pngs/gewitter/ "s3://$BUCKET/strikecast/$RUN/gewitter/" \
+            --endpoint-url "$R2_ENDPOINT" \
+            --content-type application/gzip
+
+          aws s3 sync pngs/scp/ "s3://$BUCKET/strikecast/$RUN/scp/" \
+            --endpoint-url "$R2_ENDPOINT" \
+            --content-type application/gzip
+
+          aws s3 cp pngs/metadata.json "s3://$BUCKET/strikecast/metadata.json" \
+            --endpoint-url "$R2_ENDPOINT"

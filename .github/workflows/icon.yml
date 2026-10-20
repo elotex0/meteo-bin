@@ -12,7 +12,7 @@ permissions:
   contents: read
 
 env: 
-  PYTHONPATH: ${{ github.workspace }}/tools
+  PYTHONPATH: ${{ github.workspace }}/tools/encoding
   HOURLY_MAX: 77          # Stunden START..77 im 1-Stunden-Schritt
   STEP3_FROM: 78          # danach 78..MAX_HOUR im 3-Stunden-Schritt
   MAX_HOUR: 180

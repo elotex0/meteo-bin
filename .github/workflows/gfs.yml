@@ -12,7 +12,7 @@ permissions:
   contents: read
 
 env:
-  PYTHONPATH: ${{ github.workspace }}/tools
+  PYTHONPATH: ${{ github.workspace }}/tools/encoding
   ARTIFACT_DAYS: 1      # Zwischenergebnisse werden nur kurz gebraucht
 
 jobs:
