@@ -1,4 +1,4 @@
-name: StrikeCAST – Gewitterwahrscheinlichkeit
+name: StrikeCAST Pipeline
 
 on:
   workflow_dispatch:

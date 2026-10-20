@@ -20,6 +20,8 @@ jobs:
               "ICON-EU Pipeline",
               "ICON Pipeline",
               "ECMWF IFS Pipeline",
+              "NOAA GFS Pipeline",
+              "StrikeCAST Pipeline",
             ];
 
             const keepLatest = 1;
