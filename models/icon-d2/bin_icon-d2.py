@@ -343,7 +343,8 @@ for filename in all_files_global:
             ds.close()
             continue
         data = get_values(ds, "SNOWLMT")
-        data[data < 0] = np.nan
+        data = np.maximum(data, 0)
+        
 
     else:
         print(f"Unbekannter var_type: {var_type}")
