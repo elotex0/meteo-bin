@@ -82,8 +82,8 @@ jobs:
             variables: "cape_ml:cape_ml dbz_cmax:dbz_cmax"
 
           - name: snow_cloud_water
-            downloads: "H_SNOW:snow:snow:0 SNOWLMT:snowfall:snowfall:0 CLCT:cloud:cloud:0 TWATER:twater:twater:0"
-            variables: "snow:snow change_snow:snow snowfall:snowfall cloud:cloud twater:twater"
+            downloads: "H_SNOW:snow:snow:0 CLCT:cloud:cloud:0 TWATER:twater:twater:0"
+            variables: "snow:snow change_snow:snow cloud:cloud twater:twater"
 
     steps:
       - name: Checkout Repo
