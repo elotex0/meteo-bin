@@ -4,6 +4,8 @@ import os
 import glob
 import re
 import gc
+import json
+import struct
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -28,7 +30,13 @@ GRID = {
     "extent": [-3.94, 43.18, 20.34, 58.08],   # lon_min, lat_min, lon_max, lat_max
     "width": 1215,
     "height": 746,
+    "nodata": int(NODATA_U8),
+    "levels": int(LEVELS),
 }
+
+# Dateiformat (Version 1):
+#   [ uint32 Big-Endian: Länge N des JSON ][ N Byte JSON, UTF-8 ][ width*height Byte uint8 ]
+FORMAT_VERSION = 1
 
 
 def encode_uint8(data, enc):
@@ -54,6 +62,19 @@ def encode_uint8(data, enc):
     q = q.astype(np.uint8)
     q[nan_mask] = NODATA_U8
     return q
+
+def write_map(path, q, header):
+    """Schreibt [uint32 N][JSON-Header][uint8-Raster]."""
+    js = json.dumps(header, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    payload = np.ascontiguousarray(q, dtype=np.uint8).tobytes()
+    if len(payload) != GRID["width"] * GRID["height"]:
+        raise ValueError(f"Rastergröße {len(payload)} != {GRID['width']}*{GRID['height']}")
+    with open(path, "wb") as f:
+        f.write(struct.pack(">I", len(js)))
+        f.write(js)
+        f.write(payload)
+    return 4 + len(js) + len(payload)
+
 
 # ------------------------------
 # Zielraster (= ICON-D2-Raster), Süd -> Nord aufsteigend
@@ -267,9 +288,21 @@ def main():
         vt_de = _to_de_local(valid_to)
         outname = f"{VAR_TYPE}_{vt_de.strftime('%Y%m%d_%H%M')}"
         outfile = os.path.join(OUT_DIR, outname)
-        np.ascontiguousarray(q, dtype=np.uint8).tofile(outfile)
 
-        print(f"  → {outfile}  ({WIDTH}x{HEIGHT}, {q.nbytes} Bytes, run={run_label}, interval={interval_hours}h)")
+        vt_utc = pd.Timestamp(valid_to)
+        vt_utc = vt_utc.tz_localize("UTC") if vt_utc.tzinfo is None else vt_utc.tz_convert("UTC")
+        header = {
+            "format": FORMAT_VERSION,
+            "var": VAR_TYPE,
+            "grid": GRID,
+            "orientation": "row0 = Norden, row-major, uint8",
+            "projection": "EPSG:4326",
+            "valid_time_utc": vt_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "valid_time_local": vt_de.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        }
+        n_bytes = write_map(outfile, q, header)
+
+        print(f"  → {outfile}  ({WIDTH}x{HEIGHT}, {n_bytes} Bytes, run={run_label}, interval={interval_hours}h)")
 
         ds.close()
         del prob, prob_fine, q

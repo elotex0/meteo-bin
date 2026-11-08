@@ -1,6 +1,7 @@
 import sys
 import os
 import gc
+import struct
 import json
 import datetime as dt
 from zoneinfo import ZoneInfo
@@ -60,9 +61,21 @@ LAT_STORED_DESCENDING = False
 # Ausgaberaster (identisch zum ICON-D2-Raster)
 # ------------------------------
 # regular-lat-lon, EPSG:4326, row0 = Norden, Werte = Pixelzzentren.
-# MUSS zu GRID in generate_metadata.py passen (dort wird die Dateigröße geprüft).
+# Das GRID steht in jeder Ausgabedatei im JSON-Header.
 GRID_LON_MIN, GRID_LAT_MIN, GRID_LON_MAX, GRID_LAT_MAX = -3.94, 43.18, 20.34, 58.08
 GRID_WIDTH, GRID_HEIGHT = 1215, 746
+
+GRID = {
+    "extent": [GRID_LON_MIN, GRID_LAT_MIN, GRID_LON_MAX, GRID_LAT_MAX],
+    "width": GRID_WIDTH,
+    "height": GRID_HEIGHT,
+    "nodata": int(NODATA_U8),
+    "levels": int(LEVELS),
+}
+
+# Dateiformat (Version 1):
+#   [ uint32 Big-Endian: Länge N des JSON ][ N Byte JSON, UTF-8 ][ width*height Byte uint8 ]
+FORMAT_VERSION = 1
 
 # Ausschnitt, der aus dem globalen Gitter gelesen wird (= Ausgaberaster)
 extent = [GRID_LON_MIN, GRID_LON_MAX, GRID_LAT_MIN, GRID_LAT_MAX]  # lon_min, lon_max, lat_min, lat_max
@@ -96,6 +109,19 @@ def encode_uint8(data, enc):
     q = q.astype(np.uint8)
     q[nan_mask] = NODATA_U8
     return q
+
+
+def write_map(path, q, header):
+    """Schreibt [uint32 N][JSON-Header][uint8-Raster]."""
+    js = json.dumps(header, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    payload = np.ascontiguousarray(q, dtype=np.uint8).tobytes()
+    if len(payload) != GRID_WIDTH * GRID_HEIGHT:
+        raise ValueError(f"Rastergröße {len(payload)} != {GRID_WIDTH}*{GRID_HEIGHT}")
+    with open(path, "wb") as f:
+        f.write(struct.pack(">I", len(js)))
+        f.write(js)
+        f.write(payload)
+    return 4 + len(js) + len(payload)
 
 
 def to_target_grid(data, lon, lat):
@@ -172,8 +198,6 @@ meta = {
     "var": var_type,
     "unit": enc["unit"],
     "dtype": "uint8",
-    "nodata": NODATA_U8,
-    "levels": LEVELS,
     "transform": enc["transform"],
     "vmin": enc["vmin"],
     "vmax": enc["vmax"],
@@ -183,11 +207,6 @@ meta = {
         "ssqrt": "u = q/254*2 - 1; v = sign(u) * u^2 * vmax",
         "raw": "v = q",
     }[enc["transform"]],
-    "orientation": "row0 = Norden, row-major, uint8",
-    "projection": "EPSG:4326",
-    "extent_4326": [GRID_LON_MIN, GRID_LAT_MIN, GRID_LON_MAX, GRID_LAT_MAX],
-    "width": GRID_WIDTH,
-    "height": GRID_HEIGHT,
     "files": [],
 }
 
@@ -235,15 +254,25 @@ for filename in matching_files:
             valid_time_local = valid_times_utc[t_idx].astimezone(ZoneInfo("Europe/Berlin"))
             outname = f"{var_type}_{valid_time_local:%Y%m%d_%H%M}"
             out_path = os.path.join(output_dir, outname)
-            np.ascontiguousarray(q, dtype=np.uint8).tofile(out_path)
+
+            header = {
+                "format": FORMAT_VERSION,
+                "var": var_type,
+                "grid": GRID,
+                "orientation": "row0 = Norden, row-major, uint8",
+                "projection": "EPSG:4326",
+                "valid_time_utc": valid_times_utc[t_idx].strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "valid_time_local": valid_time_local.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            }
+            n_bytes = write_map(out_path, q, header)
 
             meta["files"].append({
                 "file": outname,
-                "valid_time_utc": valid_times_utc[t_idx].strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "valid_time_local": valid_time_local.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                "valid_time_utc": header["valid_time_utc"],
+                "valid_time_local": header["valid_time_local"],
             })
 
-            print(f"{filename} t_idx={t_idx} -> {outname} ({GRID_WIDTH}x{GRID_HEIGHT}, {q.nbytes} Bytes)")
+            print(f"{filename} t_idx={t_idx} -> {outname} ({GRID_WIDTH}x{GRID_HEIGHT}, {n_bytes} Bytes)")
 
             del data, grid_data, q
 
