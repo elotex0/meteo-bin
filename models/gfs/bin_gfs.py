@@ -166,7 +166,7 @@ def save_field(data, lon, lat, valid_time_utc):
         "valid_time_local": header["valid_time_local"],
     })
 
-    print(f"{filename} -> {outname} ({GRID_WIDTH}x{GRID_HEIGHT}, {n_bytes} Bytes)")
+    print(f"-> {outname} ({GRID_WIDTH}x{GRID_HEIGHT}, {n_bytes} Bytes)")
     return outname
 
 
@@ -300,7 +300,6 @@ elif var_type in ("t2m", "wind", "tp"):
             continue
 
         outname = save_field(data, lon, lat, valid_time_utc)
-        print(f"{filename} -> {outname} ({GRID_WIDTH}x{GRID_HEIGHT})")
 
         del data
         gc.collect()
