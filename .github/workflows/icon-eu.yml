@@ -71,9 +71,9 @@ jobs:
             downloads: "T_2M:t2m:t2m:0 T/lvt1/100/lv1/85000:t850:t850:0 WW:ww:ww:0"
             variables: "t2m t850 ww"
 
-          - name: precip_wind
-            downloads: "TOT_PREC:tp_acc:tot_prec:0 VMAX_10M:wind:wind:0"
-            variables: "tp_acc wind"
+          - name: precip_wind_snow
+            downloads: "TOT_PREC:tp_acc:tot_prec:0 VMAX_10M:wind:wind:0 H_SNOW:snow:snow:0"
+            variables: "tp_acc wind snow"
 
     steps:
       - name: Checkout Repo
